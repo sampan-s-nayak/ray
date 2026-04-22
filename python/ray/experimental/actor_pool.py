@@ -28,7 +28,7 @@ Example usage::
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import ray
 from ray._raylet import ActorPoolID
@@ -277,6 +277,7 @@ class ActorPool:
         method_name: str,
         *args,
         num_returns: int = 1,
+        retry_exceptions: Union[bool, list, tuple] = False,
         **kwargs,
     ) -> ray.ObjectRef:
         """Submit a task to the pool.
@@ -289,6 +290,10 @@ class ActorPool:
             method_name: Name of the actor method to call.
             *args: Positional arguments for the method.
             num_returns: Number of return values (-2 for streaming generator).
+            retry_exceptions: Same semantics as actor ``.remote()``: if ``True``,
+                retry application failures the worker marks retryable; if a
+                ``list`` or ``tuple`` of exception types, only those types are
+                retried (equivalent to ``True`` with an allowlist).
             **kwargs: Keyword arguments for the method.
 
         Returns:
@@ -308,6 +313,15 @@ class ActorPool:
 
         self._tasks_submitted += 1
 
+        retry_exception_allowlist = None
+        if retry_exceptions is None:
+            retry_exceptions_bool = False
+        elif isinstance(retry_exceptions, (list, tuple)):
+            retry_exception_allowlist = tuple(retry_exceptions)
+            retry_exceptions_bool = True
+        else:
+            retry_exceptions_bool = bool(retry_exceptions)
+
         object_refs = self._core_worker.submit_task_to_pool(
             self._pool_id,
             language,
@@ -319,6 +333,8 @@ class ActorPool:
             concurrency_group_name=b"",
             generator_backpressure_num_objects=-1,
             enable_task_events=True,
+            retry_exceptions=retry_exceptions_bool,
+            retry_exception_allowlist=retry_exception_allowlist,
         )
 
         if not object_refs:

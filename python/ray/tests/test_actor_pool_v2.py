@@ -65,6 +65,20 @@ class CrashableWorker:
         return self.call_count
 
 
+@ray.remote
+class FlakyAppErrorWorker:
+    """Raises ValueError on the first two ``unstable`` calls, then succeeds."""
+
+    def __init__(self):
+        self._invocations = 0
+
+    def unstable(self):
+        self._invocations += 1
+        if self._invocations < 3:
+            raise ValueError("intentional flaky failure")
+        return "done"
+
+
 @pytest.fixture
 def ray_start():
     """Start Ray for tests."""
@@ -183,6 +197,39 @@ class TestActorPoolV2Submit:
         results = ray.get(refs, timeout=30)
         assert results == [i * 2 for i in range(10)]
 
+        pool.shutdown()
+
+    def test_submit_retry_exceptions_retries_application_errors(self, ray_start):
+        """Pool task spec must honor retry_exceptions (C++ SetActorTaskSpec path)."""
+        pool = ActorPool(FlakyAppErrorWorker, size=1)
+        ref_fail = pool.submit("unstable")
+        with pytest.raises(ray.exceptions.RayTaskError):
+            ray.get(ref_fail, timeout=60)
+        pool.shutdown()
+
+        pool2 = ActorPool(FlakyAppErrorWorker, size=1)
+        ref_ok = pool2.submit("unstable", retry_exceptions=True)
+        assert ray.get(ref_ok, timeout=60) == "done"
+        pool2.shutdown()
+
+    def test_submit_retry_exception_allowlist_allows_matching_exception(
+        self, ray_start
+    ):
+        """``retry_exceptions=(Type,)`` retries only listed types (actor-style allowlist)."""
+        pool = ActorPool(FlakyAppErrorWorker, size=1)
+        ref = pool.submit("unstable", retry_exceptions=(ValueError,))
+        assert ray.get(ref, timeout=60) == "done"
+        pool.shutdown()
+
+    def test_submit_retry_exception_allowlist_blocks_non_matching_exception(
+        self, ray_start
+    ):
+        """If the raised error is not in ``retry_exceptions`` tuple, no app-level retry."""
+        pool = ActorPool(FlakyAppErrorWorker, size=1)
+        ref = pool.submit("unstable", retry_exceptions=(TypeError,))
+        with pytest.raises(ray.exceptions.RayTaskError) as exc_info:
+            ray.get(ref, timeout=60)
+        assert "intentional flaky failure" in str(exc_info.value)
         pool.shutdown()
 
     def test_scale_drains_queued_tasks(self, ray_start):

@@ -57,6 +57,8 @@ using TaskCompletionCallback =
 /// \param function The function to execute.
 /// \param args The task arguments.
 /// \param task_options Task options.
+/// \param retry_exceptions Whether application errors marked retryable may be retried.
+/// \param serialized_retry_exception_allowlist Pickle-serialized exception allowlist.
 /// \param on_complete Callback to invoke when the task completes.
 /// \param pool_id The actor pool this task belongs to.
 /// \param pool_task_id The pool-scoped TaskID used as the task's TaskID.
@@ -66,6 +68,8 @@ using SubmitActorTaskCallback = std::function<std::vector<rpc::ObjectReference>(
     const RayFunction &function,
     std::vector<std::unique_ptr<TaskArg>> args,
     const TaskOptions &task_options,
+    bool retry_exceptions,
+    const std::string &serialized_retry_exception_allowlist,
     TaskCompletionCallback on_complete,
     const ActorPoolID &pool_id,
     const TaskID &pool_task_id)>;
@@ -214,12 +218,16 @@ class ActorPoolManager {
   /// \param function The function to execute.
   /// \param args The task arguments.
   /// \param task_options Task options (num_returns, resources, etc).
+  /// \param retry_exceptions Whether application errors marked retryable may be retried.
+  /// \param serialized_retry_exception_allowlist Pickle-serialized exception allowlist.
   /// \return Pool-scoped ObjectRefs for the task's return values.
   std::vector<rpc::ObjectReference> SubmitTaskToPool(
       const ActorPoolID &pool_id,
       const RayFunction &function,
       std::vector<std::unique_ptr<TaskArg>> args,
-      const TaskOptions &task_options);
+      const TaskOptions &task_options,
+      bool retry_exceptions = false,
+      const std::string &serialized_retry_exception_allowlist = "");
 
   /// Get all actor IDs in a pool.
   ///

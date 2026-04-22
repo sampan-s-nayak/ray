@@ -418,6 +418,15 @@ class CoreActorPoolAdapter(AutoscalingActorPool):
         if isinstance(concurrency_group, str):
             concurrency_group = concurrency_group.encode()
         backpressure = remote_args.get("_generator_backpressure_num_objects", -1)
+        retry_exceptions = remote_args.get("retry_exceptions")
+        retry_exception_allowlist = None
+        if isinstance(retry_exceptions, (list, tuple)):
+            retry_exception_allowlist = tuple(retry_exceptions)
+            retry_exceptions = True
+        elif retry_exceptions is None:
+            retry_exceptions = False
+        else:
+            retry_exceptions = bool(retry_exceptions)
 
         object_refs = worker.core_worker.submit_task_to_pool(
             self._pool.pool_id,
@@ -430,6 +439,8 @@ class CoreActorPoolAdapter(AutoscalingActorPool):
             concurrency_group_name=concurrency_group,
             generator_backpressure_num_objects=backpressure,
             enable_task_events=True,
+            retry_exceptions=retry_exceptions,
+            retry_exception_allowlist=retry_exception_allowlist,
         )
         if not object_refs:
             raise RuntimeError(

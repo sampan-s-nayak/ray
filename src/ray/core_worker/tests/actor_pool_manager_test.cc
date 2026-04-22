@@ -15,6 +15,7 @@
 #include "ray/core_worker/actor_pool_manager.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,6 +25,7 @@
 #include "gtest/gtest.h"
 #include "mock/ray/core_worker/task_manager_interface.h"
 #include "mock/ray/gcs_client/accessors/actor_info_accessor.h"
+#include "ray/common/asio/asio_util.h"
 #include "ray/common/task/task_util.h"
 #include "ray/common/test_utils.h"
 #include "ray/core_worker/actor_management/actor_manager.h"
@@ -146,6 +148,75 @@ class ActorPoolManagerTest : public ::testing::Test {
   std::unique_ptr<ReferenceCounterInterface> reference_counter_;
   std::unique_ptr<ActorManager> actor_manager_;
   std::unique_ptr<ActorPoolManager> pool_manager_;
+};
+
+// Pool manager wired with WorkerContext + submit callback (mirrors CoreWorker path).
+class ActorPoolManagerWithSubmitCallbackTest : public ActorPoolManagerTest {
+ protected:
+  void SetUp() override {
+    ActorPoolManagerTest::SetUp();
+    pool_manager_.reset();
+
+    worker_context_ = std::make_unique<WorkerContext>(
+        WorkerType::WORKER, WorkerID::FromRandom(), JobID::FromInt(7));
+    rpc_address_.set_ip_address("127.0.0.1");
+    rpc_address_.set_port(12345);
+
+    ON_CALL(*mock_task_manager_, RegisterPoolTaskReturnValues(_, _, _, _, _))
+        .WillByDefault([](const rpc::Address &,
+                          const TaskID &pool_task_id,
+                          size_t num_returns,
+                          const std::string &,
+                          bool) {
+          std::vector<rpc::ObjectReference> refs;
+          for (size_t i = 0; i < num_returns; ++i) {
+            rpc::ObjectReference ref;
+            ref.set_object_id(ObjectID::FromIndex(pool_task_id, i + 1).Binary());
+            refs.push_back(std::move(ref));
+          }
+          return refs;
+        });
+
+    auto submit_fn = [this](const ActorID &,
+                            const RayFunction &,
+                            std::vector<std::unique_ptr<TaskArg>> /*args*/,
+                            const TaskOptions &task_options,
+                            bool retry_exceptions,
+                            const std::string &serialized_retry_exception_allowlist,
+                            TaskCompletionCallback,
+                            const ActorPoolID &,
+                            const TaskID &) -> std::vector<rpc::ObjectReference> {
+      last_task_options_ = task_options;
+      last_pool_retry_exceptions_ = retry_exceptions;
+      last_pool_retry_allowlist_ = serialized_retry_exception_allowlist;
+      return {};
+    };
+
+    pool_manager_ =
+        std::make_unique<ActorPoolManager>(*actor_manager_,
+                                           *mock_task_manager_,
+                                           io_service_.GetIoService(),
+                                           submit_fn,
+                                           *worker_context_,
+                                           rpc_address_,
+                                           /*locality_data_provider=*/nullptr);
+  }
+
+  void TearDown() override {
+    pool_manager_.reset();
+    worker_context_.reset();
+    last_task_options_.reset();
+    last_pool_retry_exceptions_.reset();
+    last_pool_retry_allowlist_.reset();
+    ActorPoolManagerTest::TearDown();
+  }
+
+  InstrumentedIOContextWithThread io_service_{"ActorPoolManagerWithSubmitCallbackTest"};
+  std::unique_ptr<WorkerContext> worker_context_;
+  rpc::Address rpc_address_;
+  std::optional<TaskOptions> last_task_options_;
+  std::optional<bool> last_pool_retry_exceptions_;
+  std::optional<std::string> last_pool_retry_allowlist_;
 };
 
 // Test: Pool registration creates a valid pool ID
@@ -909,9 +980,8 @@ TEST_F(ActorPoolManagerLocalityTest,
     absl::MutexLock lock(&pool_manager_->mu_);
     pool_manager_->pools_[pool_id].actor_states[actor1].is_alive = true;
     pool_manager_->pools_[pool_id].actor_states[actor2].is_alive = true;
+    pool_manager_->DrainTaskQueue(pool_id);
   }
-
-  pool_manager_->DrainTaskQueue(pool_id);
 
   stats = pool_manager_->GetPoolStats(pool_id);
   EXPECT_EQ(stats.backlog_size, 0);
@@ -1371,6 +1441,56 @@ TEST_F(ActorPoolManagerTest, QueuedTasksDrainWithPoolScopedRefs) {
   EXPECT_EQ(stats.backlog_size, 0);
   // Task was submitted to the actor (in_flight incremented in minimal mode)
   EXPECT_EQ(stats.total_in_flight, 1);
+}
+
+TEST_F(ActorPoolManagerWithSubmitCallbackTest,
+       SubmitTaskToPoolForwardsRetryExceptionsToSubmitCallback) {
+  auto pool_id = CreateTestPool();
+  JobID job_id = JobID::FromInt(7);
+  auto actor_id = ActorID::Of(job_id, TaskID::ForDriverTask(job_id), 0);
+  pool_manager_->AddActorToPool(pool_id, actor_id, NodeID::FromRandom());
+  pool_manager_->OnActorAlive(actor_id, NodeID::FromRandom());
+
+  RayFunction function;
+  std::vector<std::unique_ptr<TaskArg>> args;
+  LabelSelector label_selector;
+  std::unordered_map<std::string, double> resources;
+  TaskOptions options(
+      "method", 1, resources, "", -1, "{}", true, {}, label_selector, std::nullopt, {});
+
+  ASSERT_FALSE(last_task_options_.has_value());
+  (void)pool_manager_->SubmitTaskToPool(
+      pool_id,
+      function,
+      std::move(args),
+      options,
+      /*retry_exceptions=*/true,
+      /*serialized_retry_exception_allowlist=*/"pickled_tuple");
+  ASSERT_TRUE(last_task_options_.has_value());
+  ASSERT_TRUE(last_pool_retry_exceptions_.has_value());
+  ASSERT_TRUE(last_pool_retry_allowlist_.has_value());
+  EXPECT_TRUE(*last_pool_retry_exceptions_);
+  EXPECT_EQ(*last_pool_retry_allowlist_, "pickled_tuple");
+}
+
+TEST_F(ActorPoolManagerWithSubmitCallbackTest,
+       SubmitTaskToPoolForwardsDefaultRetryExceptionsToSubmitCallback) {
+  auto pool_id = CreateTestPool();
+  JobID job_id = JobID::FromInt(7);
+  auto actor_id = ActorID::Of(job_id, TaskID::ForDriverTask(job_id), 0);
+  pool_manager_->AddActorToPool(pool_id, actor_id, NodeID::FromRandom());
+  pool_manager_->OnActorAlive(actor_id, NodeID::FromRandom());
+
+  RayFunction function;
+  std::vector<std::unique_ptr<TaskArg>> args;
+  TaskOptions options;
+
+  (void)pool_manager_->SubmitTaskToPool(pool_id, function, std::move(args), options);
+  ASSERT_TRUE(last_task_options_.has_value());
+  ASSERT_TRUE(last_pool_retry_exceptions_.has_value());
+  ASSERT_TRUE(last_pool_retry_allowlist_.has_value());
+  EXPECT_FALSE(*last_pool_retry_exceptions_);
+  EXPECT_TRUE(last_pool_retry_allowlist_->empty());
 }
 
 }  // namespace core

@@ -161,7 +161,9 @@ std::vector<rpc::ObjectReference> ActorPoolManager::SubmitTaskToPool(
     const ActorPoolID &pool_id,
     const RayFunction &function,
     std::vector<std::unique_ptr<TaskArg>> args,
-    const TaskOptions &task_options) {
+    const TaskOptions &task_options,
+    bool retry_exceptions,
+    const std::string &serialized_retry_exception_allowlist) {
   absl::MutexLock lock(&mu_);
 
   auto pool_it = pools_.find(pool_id);
@@ -220,6 +222,8 @@ std::vector<rpc::ObjectReference> ActorPoolManager::SubmitTaskToPool(
   pool_task.function = function;
   pool_task.args = std::move(args);
   pool_task.options = task_options;
+  pool_task.retry_exceptions = retry_exceptions;
+  pool_task.serialized_retry_exception_allowlist = serialized_retry_exception_allowlist;
   pool_task.return_refs = return_refs;
   pool_task.attempt_number = 0;
   pool_task.enqueued_at_ms = current_time_ms();
@@ -639,6 +643,9 @@ std::vector<rpc::ObjectReference> ActorPoolManager::SubmitToActor(
   auto args_for_submit = CloneArgs(pool_task.args);
   RayFunction function = pool_task.function;
   TaskOptions options = pool_task.options;
+  const bool retry_exceptions = pool_task.retry_exceptions;
+  std::string serialized_retry_exception_allowlist =
+      pool_task.serialized_retry_exception_allowlist;
 
   TrackPoolTask(std::move(pool_task));
 
@@ -649,6 +656,8 @@ std::vector<rpc::ObjectReference> ActorPoolManager::SubmitToActor(
                                function,
                                std::move(args_for_submit),
                                options,
+                               retry_exceptions,
+                               serialized_retry_exception_allowlist,
                                nullptr,
                                pool_id,
                                pool_task_id);

@@ -5036,7 +5036,9 @@ cdef class CoreWorker:
             double num_method_cpus,
             c_string concurrency_group_name,
             int64_t generator_backpressure_num_objects,
-            c_bool enable_task_events):
+            c_bool enable_task_events,
+            c_bool retry_exceptions=False,
+            retry_exception_allowlist=None):
         """Submit a task to an actor pool.
 
         The C++ ActorPoolManager selects an actor based on load and locality.
@@ -5056,6 +5058,11 @@ cdef class CoreWorker:
             CLabelSelector c_label_selector
             c_vector[CFallbackOption] c_fallback_strategy
             optional[c_string] c_tensor_transport = NULL_TENSOR_TRANSPORT
+            c_string serialized_retry_exception_allowlist
+
+        serialized_retry_exception_allowlist = serialize_retry_exception_allowlist(
+            retry_exception_allowlist,
+            function_descriptor)
 
         if num_method_cpus > 0:
             c_resources[b"CPU"] = num_method_cpus
@@ -5083,7 +5090,9 @@ cdef class CoreWorker:
                             c_labels,
                             c_label_selector,
                             c_tensor_transport,
-                            c_fallback_strategy)))
+                            c_fallback_strategy),
+                        retry_exceptions,
+                        serialized_retry_exception_allowlist))
         finally:
             for put_arg_id in incremented_put_arg_ids:
                 CCoreWorkerProcess.GetCoreWorker().RemoveLocalReference(

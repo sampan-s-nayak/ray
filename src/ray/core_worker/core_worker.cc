@@ -420,6 +420,8 @@ CoreWorker::CoreWorker(
              const RayFunction &function,
              std::vector<std::unique_ptr<TaskArg>> args,
              const TaskOptions &task_options,
+             bool retry_exceptions,
+             const std::string &serialized_retry_exception_allowlist,
              TaskCompletionCallback on_complete,
              const ActorPoolID &pool_id,
              const TaskID &pool_task_id) {
@@ -427,6 +429,8 @@ CoreWorker::CoreWorker(
                                             function,
                                             std::move(args),
                                             task_options,
+                                            retry_exceptions,
+                                            serialized_retry_exception_allowlist,
                                             std::move(on_complete),
                                             pool_id,
                                             pool_task_id);
@@ -2800,10 +2804,16 @@ std::vector<rpc::ObjectReference> CoreWorker::SubmitTaskToActorPool(
     const ActorPoolID &pool_id,
     const RayFunction &function,
     std::vector<std::unique_ptr<TaskArg>> args,
-    const TaskOptions &task_options) {
+    const TaskOptions &task_options,
+    bool retry_exceptions,
+    const std::string &serialized_retry_exception_allowlist) {
   RAY_CHECK(actor_pool_manager_) << "ActorPoolManager not initialized";
-  return actor_pool_manager_->SubmitTaskToPool(
-      pool_id, function, std::move(args), task_options);
+  return actor_pool_manager_->SubmitTaskToPool(pool_id,
+                                               function,
+                                               std::move(args),
+                                               task_options,
+                                               retry_exceptions,
+                                               serialized_retry_exception_allowlist);
 }
 
 std::vector<ActorID> CoreWorker::GetActorPoolActors(const ActorPoolID &pool_id) const {
@@ -2821,6 +2831,8 @@ std::vector<rpc::ObjectReference> CoreWorker::SubmitActorTaskForPool(
     const RayFunction &function,
     std::vector<std::unique_ptr<TaskArg>> args,
     const TaskOptions &task_options,
+    bool retry_exceptions,
+    const std::string &serialized_retry_exception_allowlist,
     TaskCompletionCallback on_complete,
     const ActorPoolID &pool_id,
     const TaskID &pool_task_id) {
@@ -2892,8 +2904,8 @@ std::vector<rpc::ObjectReference> CoreWorker::SubmitActorTaskForPool(
   actor_handle->SetActorTaskSpec(builder,
                                  ObjectID::Nil(),
                                  /*max_retries=*/-1,
-                                 /*retry_exceptions=*/false,
-                                 /*serialized_retry_exception_allowlist=*/"",
+                                 retry_exceptions,
+                                 serialized_retry_exception_allowlist,
                                  task_options.concurrency_group_name,
                                  task_options.tensor_transport);
 

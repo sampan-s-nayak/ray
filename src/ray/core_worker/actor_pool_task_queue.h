@@ -49,6 +49,11 @@ struct PoolTask {
   /// Task options (num_returns, resources, etc).
   TaskOptions options;
 
+  /// Same semantics as ``SubmitActorTask``'s standalone retry parameters (not part of
+  /// ``TaskOptions``).
+  bool retry_exceptions = false;
+  std::string serialized_retry_exception_allowlist;
+
   /// Pre-created ObjectRefs tied to pool_task_id. Returned to caller immediately
   /// at submission time, before any actor is selected.
   std::vector<rpc::ObjectReference> return_refs;
@@ -74,6 +79,9 @@ struct PoolTask {
         args(std::move(other.args)),
         arg_ids(std::move(other.arg_ids)),
         options(std::move(other.options)),
+        retry_exceptions(other.retry_exceptions),
+        serialized_retry_exception_allowlist(
+            std::move(other.serialized_retry_exception_allowlist)),
         return_refs(std::move(other.return_refs)),
         attempt_number(other.attempt_number),
         enqueued_at_ms(other.enqueued_at_ms),
@@ -88,6 +96,9 @@ struct PoolTask {
       args = std::move(other.args);
       arg_ids = std::move(other.arg_ids);
       options = std::move(other.options);
+      retry_exceptions = other.retry_exceptions;
+      serialized_retry_exception_allowlist =
+          std::move(other.serialized_retry_exception_allowlist);
       return_refs = std::move(other.return_refs);
       attempt_number = other.attempt_number;
       enqueued_at_ms = other.enqueued_at_ms;
